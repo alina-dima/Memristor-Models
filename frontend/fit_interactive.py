@@ -28,17 +28,23 @@ class Model():
         self.V = Interpolated( time, voltage )
         
         self.h1 = self.mimd
-        self.h2 = self.mimd
-    
+        self.h2 = self.schottky
+
+    def schottky( self, v, g_p, b_p, g_n, b_n ):
+        return np.where( v >= 0,
+                         g_p * (1 - np.exp(-b_p*v)),
+                         g_n * np.sinh( b_n * v ) # or zero
+                         )
+
     def mimd( self, v, g_p, b_p, g_n, b_n ):
         return np.where( v >= 0,
                          g_p * np.sinh( b_p * v ),
                          g_n * np.sinh( b_n * v )
                          )
-    
+
     def I( self, t, x, on_pars, off_pars ):
         v = self.V( t )
-        
+
         return self.h1( v, *on_pars ) * x + self.h2( v, *off_pars ) * (1 - x)
     
     def g( self, v, Ap, An, Vp, Vn ):
@@ -212,6 +218,8 @@ class FitWindow( tk.Toplevel ):
 
 
 class PlotWindow( tk.Toplevel ):
+    iv_plt_type = "lin"
+
     def __init__( self, master, xy ):
         super( PlotWindow, self ).__init__( master )
         
@@ -236,11 +244,11 @@ class PlotWindow( tk.Toplevel ):
     
     def update_output( self, _ ):
         self.on_label.set(
-                f"{self.master.gmax_p.get():.2e} * sinh({self.master.bmax_p.get():.2f} * V(t)), V(t) >= 0"
+                f"{self.master.gmax_p.get():.2e} * (1 - exp({-self.master.bmax_p.get():.2f} * V(t))), V(t) >= 0"
                 f"\n{self.master.gmax_n.get():.2e} * sinh({self.master.bmax_n.get():.2f} * V(t)), "
                 f"V(t) < 0" )
         self.off_label.set(
-                f"{self.master.gmin_p.get():.2e} * sinh({self.master.bmin_p.get():.2f} * V(t)), V(t) >= 0"
+                f"{self.master.gmin_p.get():.2e} * (1-exp({-self.master.bmin_p.get():.2f} * V(t))), V(t) >= 0"
                 f"\n{self.master.gmin_n.get():.2e} * sinh({self.master.bmin_n.get():.2f} * V(t)), "
                 f"V(t) < 0" )
     
@@ -277,7 +285,7 @@ class PlotWindow( tk.Toplevel ):
         Ap_label = ttk.Label( self.plot_frame, text="Ap" )
         Ap_label.grid( column=0, row=3, padx=0, pady=5 )
         
-        Ap_slider = ttk.Scale( self.plot_frame, from_=0.0001, to=100, variable=self.master.Ap,
+        Ap_slider = ttk.Scale( self.plot_frame, from_=0, to=2, variable=self.master.Ap,
                                command=self.master.plot_update )
         Ap_slider.grid( column=1, row=3, padx=0, pady=5, sticky="EW" )
         
@@ -288,7 +296,7 @@ class PlotWindow( tk.Toplevel ):
         An_label = ttk.Label( self.plot_frame, text="An" )
         An_label.grid( column=0, row=4, padx=0, pady=5 )
         
-        An_slider = ttk.Scale( self.plot_frame, from_=0.0001, to=100, variable=self.master.An,
+        An_slider = ttk.Scale( self.plot_frame, from_=0, to=2, variable=self.master.An,
                                command=self.master.plot_update )
         An_slider.grid( column=1, row=4, padx=0, pady=5, sticky="EW" )
         
@@ -404,6 +412,7 @@ class PlotWindow( tk.Toplevel ):
         self.button_frame.grid( row=5, column=0, pady=10 )
         ttk.Button( self.button_frame, text="Save fitting", command=self.save ).grid( row=0, column=0, padx=50 )
         ttk.Button( self.button_frame, text="Debug", command=self.debug ).grid( row=0, column=1, padx=50 )
+        ttk.Button( self.button_frame, text="Change I-V view", command=self.change_iv_view ).grid( row=0, column=2, padx=50 )
         
         # bind keyboard input
         entries = [ gmax_p_entry, bmax_p_entry, gmax_n_entry, bmax_n_entry, gmin_p_entry, bmin_p_entry, gmin_n_entry,
@@ -416,7 +425,14 @@ class PlotWindow( tk.Toplevel ):
             ent.bind( "<Tab>", self.update_output, add="+" )
             ent.bind( '<Up>', lambda e, var_lmb=var: self.master.nudge_var( var_lmb, "up" ) )
             ent.bind( '<Down>', lambda e, var_lmb=var: self.master.nudge_var( var_lmb, "down" ) )
-    
+
+    def change_iv_view ( self ):
+        if self.iv_plt_type == "lin":
+            self.iv_plt_type = "log"
+        else:
+            self.iv_plt_type = "lin"
+        self.plot_update( self )
+
     def save( self ):
         parameters = {
                 "Ap"    : self.master.Ap.get(),
@@ -470,10 +486,10 @@ class PlotWindow( tk.Toplevel ):
         # x = x_solve_ivp.y[ 0, : ]
         
         # TODO dt should also be changeable
-        x = solver( self.master.memristor.dxdt, self.master.time,
-                    dt=1 / 10000,
-                    iv=self.master.x0.get(),
-                    args=self.master.get_sim_pars() )
+        x = solver(self.master.memristor.dxdt, self.master.time,
+                   dt=np.mean( np.diff( self.master.time ) ),
+                   iv=self.master.x0.get(),
+                   args=self.master.get_sim_pars())
         t = self.master.time
         v = self.master.memristor.V( t )
         i = self.master.memristor.I( t, x, self.master.get_on_pars(), self.master.get_off_pars() )
@@ -497,11 +513,21 @@ class PlotWindow( tk.Toplevel ):
         
         self.axes[ 0 ].plot( self.master.time, i, color="g", alpha=0.5 )
         self.axes[ 2 ].plot( self.master.voltage, i, color="g", alpha=0.5 )
+
+    def plot_data_log(self):
+        i = abs(self.master.current)
+
+        self.axes[ 0 ].set_yscale( "log" )
+        self.axes[ 2 ].set_yscale( "log" )
+        self.axes[ 0 ].plot( self.master.time, i, color="g", alpha=0.5 )
+        self.axes[ 2 ].plot( self.master.voltage, i, color="g", alpha=0.5 )
     
     # TODO I don't think that the plots (eg current) are correct
     def debug( self ):
-        x = solver( self.master.memristor.dxdt, self.master.time, dt=np.mean( np.diff( self.master.time ) ),
-                    iv=self.master.x0.get(), args=self.master.get_sim_pars() )
+        x = solver(self.master.memristor.dxdt, self.master.time,
+                   dt=np.mean( np.diff( self.master.time ) ),
+                   iv=self.master.x0.get(),
+                   args=self.master.get_sim_pars())
         t = self.master.time
         v = self.master.memristor.V( t )
         i = self.master.memristor.I( t, x, self.master.get_on_pars(), self.master.get_off_pars() )
@@ -540,9 +566,9 @@ class PlotWindow( tk.Toplevel ):
         # # updated simulation results
         # t = x_solve_ivp.t
         # x = x_solve_ivp.y[ 0, : ]
-        
+
         x = solver( self.master.memristor.dxdt, self.master.time,
-                    dt=1 / 10000,
+                    dt=np.mean( np.diff( self.master.time ) ),
                     iv=self.master.x0.get(),
                     args=self.master.get_sim_pars() )
         t = self.master.time
@@ -552,25 +578,40 @@ class PlotWindow( tk.Toplevel ):
         # remove old lines
         for ax in self.axes:
             ax.clear()
+
+        if self.iv_plt_type == "lin":
+            self.axes[ 0 ].set_yscale( "linear" )
+            self.axes[ 1 ].set_yscale( "linear" )
+            self.axes[ 2 ].set_yscale( "linear" )
+            self.axes[ 0 ].plot( t, i, color="b" )
+            self.axes[ 1 ].plot( t, v, color="r" )
+            self.axes[ 2 ].plot( v, i, color="b" )
+
+            self.axes[ 0 ].set_ylim( [ np.min( i ) - np.abs( 0.5 * np.min( i ) ),
+                                       np.max( i ) + np.abs( 0.5 * np.max( i ) ) ] )
+            self.axes[ 1 ].set_ylim( [ np.min( v ) - np.abs( 0.5 * np.min( v ) ),
+                                       np.max( v ) + np.abs( 0.5 * np.max( v ) ) ] )
+            self.axes[ 2 ].set_ylim( [ np.min( i ) - np.abs( 0.5 * np.min( i ) ),
+                                       np.max( i ) + np.abs( 0.5 * np.max( i ) ) ] )
+
+            # plot real data
+            self.plot_data()
+        else:
+            self.axes[ 0 ].set_yscale( "log" )
+            self.axes[ 2 ].set_yscale( "log" )
+            self.axes[ 0 ].plot( t, abs(i), color="b" )
+            self.axes[ 1 ].plot( t, v, color="r" )
+            self.axes[ 2 ].plot( v, abs(i), color="b" )
+
+            # plot real data
+            self.plot_data_log()
         
         # Plot new graphs
-        self.axes[ 0 ].plot( t, i, color="b" )
-        self.axes[ 1 ].plot( t, v, color="r" )
-        self.axes[ 2 ].plot( v, i, color="b" )
         
         self.axes[ 0 ].set_xlim( np.min( t ), np.max( t ) )
-        self.axes[ 0 ].set_ylim( [ np.min( i ) - np.abs( 0.5 * np.min( i ) ),
-                                   np.max( i ) + np.abs( 0.5 * np.max( i ) ) ] )
         self.axes[ 1 ].set_xlim( np.min( t ), np.max( t ) )
-        self.axes[ 1 ].set_ylim(
-                [ np.min( v ) - np.abs( 0.5 * np.min( v ) ), np.max( v ) + np.abs( 0.5 * np.max( v ) ) ] )
         self.axes[ 2 ].set_xlim(
                 [ np.min( v ) - np.abs( 0.5 * np.min( v ) ), np.max( v ) + np.abs( 0.5 * np.max( v ) ) ] )
-        self.axes[ 2 ].set_ylim( [ np.min( i ) - np.abs( 0.5 * np.min( i ) ),
-                                   np.max( i ) + np.abs( 0.5 * np.max( i ) ) ] )
-        
-        # plot real data
-        self.plot_data()
         
         self.axes[ 0 ].set_ylabel( f"Current (A)", color="b" )
         self.axes[ 0 ].set_xlabel( f"Time (s)" )
@@ -740,6 +781,7 @@ class MainWindow( tk.Tk ):
             self.fit_button[ "state" ] = "normal"
             self.plot_button[ "state" ] = "normal"
             self.reset_button[ "state" ] = "normal"
+            self.regress_button[ "state" ] = "normal"
             
             self.read_input( self.device_file )
             
@@ -814,6 +856,40 @@ class MainWindow( tk.Tk ):
             parameters = yaml.load( file, Loader=yaml.SafeLoader )
         
         self.init_variables( parameters )
+
+    def fit_param(self):
+        def ode_fitting( t, An, Ap, Vn, Vp, alphan, alphap, bmax_n, bmax_p,
+                        bmin_n, bmin_p, gmax_n, gmax_p, gmin_n, gmin_p, x0, xn, xp ):
+            args = [ Ap, An, Vp, Vn, xp, xn, alphap, alphan, 1 ]
+            on_pars = [ gmax_p, bmax_p, gmax_n, bmax_n ]
+            off_pars = [ gmin_p, bmin_p, gmin_n, bmin_n ]
+            sol = solve_ivp(self.memristor.dxdt, (t[ 0 ], t[ -1 ]), [x0], method="Radau",
+                            t_eval=t,
+                            args=args,
+                            # p0=[0]
+                            )
+            return self.memristor.I(t, sol.y[0, :], on_pars, off_pars)
+
+        return ode_fitting
+
+    @staticmethod
+    def parameters():
+        return ["An", "Ap", "Vn", "Vp", "alphan", "alphap", "bmax_n", "bmax_p",
+                "bmin_n", "bmin_p", "gmax_n", "gmax_p", "gmin_n", "gmin_p", "x0", "xn", "xp"]
+
+    def regress_param( self ):
+        print("Running curve_fit")
+        popt, pcov = curve_fit(self.fit_param(), self.time, self.current,
+                               bounds=([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                                       [3, 3, 2, 2, 10, 10, 10, 10, 10, 10, 1, 1, 1, 1, 1, 1, 1]),
+                               p0=[0.04, 0.5, 1.06, 0.5, 8.41, 3.35, 3.23, 5.6, 2.6, 0.0015, 0.00017, 0.00022, 4.4e-07,
+                                   0.6, 0, 0.242, 0.1],
+                               maxfev=100000
+                               )
+
+        fitted_params = {p: v for p, v in zip(self.parameters(), popt)}
+        # print("Fitted parameters", [(p, np.round(v, 2)) for p, v in zip(self.parameters(), popt)])
+        for k,v in fitted_params.items(): print(f'{k}: {v}')
     
     def input_setup( self ):
         self.data_button = ttk.Button( self, text="Load data", command=self.select_file )
@@ -821,6 +897,8 @@ class MainWindow( tk.Tk ):
         self.parameters_button = ttk.Button( self, text="Load parameters", command=self.load_parameters,
                                              state="disabled" )
         self.parameters_button.pack( side="top", fill="x" )
+        self.regress_button = ttk.Button(self, text="Regress parameters", command=self.regress_param, state="disabled")
+        self.regress_button.pack(side="top", fill="x")
         self.fit_button = ttk.Button( self, text="Fit", command=self.open_fit_window, state="disabled" )
         self.fit_button.pack( side="top", fill="x" )
         self.plot_button = ttk.Button( self, text="Plot", command=self.open_plot_window, state="disabled" )

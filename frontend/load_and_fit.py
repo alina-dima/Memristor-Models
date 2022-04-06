@@ -13,7 +13,7 @@ from backend.models import Yakopcic
 #                         Load data
 ###############################################################################
 
-with open( f"../pickles/Radius 10 um/-4V_1.pkl", "rb" ) as file:
+with open( f"../imported_data/pickles/Radius 10 um/-2V_0.pkl", "rb" ) as file:
     df = pickle.load( file )
 
 time = df[ "t" ].to_list()

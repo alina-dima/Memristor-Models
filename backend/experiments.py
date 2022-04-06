@@ -1,7 +1,7 @@
 import numpy as np
 
-import functions
-import models
+import backend.functions as functions
+import backend.models as models
 
 
 class Experiment():
