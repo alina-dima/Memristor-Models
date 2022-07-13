@@ -10,7 +10,10 @@ from tkinter.simpledialog import askstring
 
 import yaml
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 from scipy.integrate import solve_ivp
+from scipy import integrate
+from scipy.optimize import curve_fit
 
 from backend.functions import *
 
@@ -26,19 +29,19 @@ from backend.functions import *
 class Model():
     def __init__( self, time, voltage ):
         self.V = Interpolated( time, voltage )
-        
-        self.h1 = self.mimd
-        self.h2 = self.schottky
 
-    def schottky( self, v, g_p, b_p, g_n, b_n ):
-        return np.where( v >= 0,
-                         g_p * (1 - np.exp(-b_p*v)),
-                         g_n * np.sinh( b_n * v ) # or zero
-                         )
+        self.h1 = self.lrs
+        self.h2 = self.hrs
 
-    def mimd( self, v, g_p, b_p, g_n, b_n ):
+    def lrs( self, v, g_p, b_p, g_n, b_n ):
         return np.where( v >= 0,
                          g_p * np.sinh( b_p * v ),
+                         g_n * ( 1 - np.exp( -b_n * v ) )
+                         )
+
+    def hrs( self, v, g_p, b_p, g_n, b_n ):
+        return np.where( v >= 0,
+                         g_p * ( 1 - np.exp( -b_p * v ) ),
                          g_n * np.sinh( b_n * v )
                          )
 
@@ -244,14 +247,14 @@ class PlotWindow( tk.Toplevel ):
     
     def update_output( self, _ ):
         self.on_label.set(
-                f"{self.master.gmax_p.get():.2e} * (1 - exp({-self.master.bmax_p.get():.2f} * V(t))), V(t) >= 0"
-                f"\n{self.master.gmax_n.get():.2e} * sinh({self.master.bmax_n.get():.2f} * V(t)), "
-                f"V(t) < 0" )
+            f"{self.master.gmax_p.get():.2e} * sinh({self.master.bmax_p.get():.2f} * V(t)), V(t) >= 0"
+            f"\n{self.master.gmax_n.get():.2e} * (1-exp({-self.master.bmax_n.get():.2f} * V(t))), "
+            f"V(t) < 0")
         self.off_label.set(
-                f"{self.master.gmin_p.get():.2e} * (1-exp({-self.master.bmin_p.get():.2f} * V(t))), V(t) >= 0"
-                f"\n{self.master.gmin_n.get():.2e} * sinh({self.master.bmin_n.get():.2f} * V(t)), "
-                f"V(t) < 0" )
-    
+            f"{self.master.gmin_p.get():.2e} * (1-exp({-self.master.bmin_p.get():.2f} * V(t))), V(t) >= 0"
+            f"\n{self.master.gmin_n.get():.2e} * sinh({self.master.bmin_n.get():.2f} * V(t)), "
+            f"V(t) < 0")
+
     def output_setup( self ):
         self.error = tk.StringVar()
         self.error.set( str( 0.0 ) )
@@ -388,6 +391,10 @@ class PlotWindow( tk.Toplevel ):
                                                                   sticky=tk.E + tk.W, padx=0, pady=5 )
         ttk.Label( self.function_frame, text="Stable OFF:" ).grid( row=0, column=4, columnspan=2,
                                                                    sticky=tk.E + tk.W, padx=0, pady=5 )
+        error = f"Average error{order_of_magnitude.symbol( self.get_fit_error()[ 0 ] )[ 2 ]}A " \
+                f"({np.mean( self.get_fit_error()[ 1 ] ):.2f}% )"
+        ttk.Label( self.function_frame, text=error ).grid( row=0, column=7, columnspan=2,
+                                                           sticky=tk.E + tk.W, padx=0, pady=5 )
         ttk.Label( self.function_frame, text="V >= 0" ).grid( column=0, row=1, padx=0, pady=5 )
         ttk.Label( self.function_frame, text="V < 0" ).grid( column=0, row=2, padx=0, pady=5 )
         
@@ -426,7 +433,22 @@ class PlotWindow( tk.Toplevel ):
             ent.bind( '<Up>', lambda e, var_lmb=var: self.master.nudge_var( var_lmb, "up" ) )
             ent.bind( '<Down>', lambda e, var_lmb=var: self.master.nudge_var( var_lmb, "down" ) )
 
-    def change_iv_view ( self ):
+    def get_fit_error(self):
+        x = solver( self.master.memristor.dxdt, self.master.time,
+                    dt=np.mean( np.diff( self.master.time ) ),
+                    iv=self.master.x0.get(),
+                    args=self.master.get_sim_pars()
+                    )
+        t = self.master.time
+        fitted_data = self.master.memristor.I( t, x, self.master.get_on_pars(), self.master.get_off_pars() )
+        simulated_data = self.master.current
+
+        error = np.sum( np.abs( simulated_data[ 1: ] - fitted_data[ 1: ] ) )
+        error_average = np.mean( error )
+        error_percent = 100 * error / np.sum( np.abs( fitted_data[ 1: ] ) )
+        return error_average, error_percent
+
+    def change_iv_view( self ):
         if self.iv_plt_type == "lin":
             self.iv_plt_type = "log"
         else:
@@ -551,11 +573,26 @@ class PlotWindow( tk.Toplevel ):
             ax.set_xlabel( "Time" )
         fig_debug.tight_layout()
         fig_debug.show()
-        
+
         print( f"max(i): {np.max( i )}, min(i): {np.min( i )} " )
         print( f"max(x): {np.max( x )}, min(x): {np.min( x )} " )
-    
+
+        fig_p_e, axes_p_e = plt.subplots( 2, 1, figsize=( 8, 10 ) )
+        power = lambda idx: ( v * i )[ int( idx ) ]          # Callable power based on index
+        energy = [ integrate.quad( power, 0, b, limit=i.size )[ 0 ] for b in range( i.size ) ]
+        axes_p_e[ 0 ].plot( t, v*i )
+        axes_p_e[ 0 ].set_ylabel( "Power (W)" )
+        axes_p_e[ 0 ].set_xlabel( "Time (s)" )
+        axes_p_e[ 1 ].plot( t, energy )
+        axes_p_e[ 1 ].set_ylabel( "Energy (J)" )
+        axes_p_e[ 1 ].set_xlabel( "Time (s)" )
+        fig_p_e.show()
+
     def plot_update( self, _ ):
+        error = f"Average error {order_of_magnitude.symbol( self.get_error()[ 0 ] )[ 2 ]}A " \
+                f"({np.mean( self.get_error()[ 1 ] ):.2f} %)"
+        ttk.Label( self.function_frame, text=error ).grid( row=0, column=7, columnspan=2,
+                                                           sticky=tk.E + tk.W, padx=0, pady=5 )
         # simulate the model
         # x_solve_ivp = solve_ivp( self.master.memristor.dxdt, (self.master.time[ 0 ], self.master.time[ -1 ]),
         #                          [ self.master.x0 ],
@@ -868,22 +905,22 @@ class MainWindow( tk.Tk ):
                             args=args,
                             # p0=[0]
                             )
-            return self.memristor.I(t, sol.y[0, :], on_pars, off_pars)
+            return self.memristor.I( t, sol.y[ 0, : ], on_pars, off_pars )
 
         return ode_fitting
 
     @staticmethod
     def parameters():
-        return ["An", "Ap", "Vn", "Vp", "alphan", "alphap", "bmax_n", "bmax_p",
-                "bmin_n", "bmin_p", "gmax_n", "gmax_p", "gmin_n", "gmin_p", "x0", "xn", "xp"]
+        return [ "An", "Ap", "Vn", "Vp", "alphan", "alphap", "bmax_n", "bmax_p",
+                "bmin_n", "bmin_p", "gmax_n", "gmax_p", "gmin_n", "gmin_p", "x0", "xn", "xp" ]
 
     def regress_param( self ):
         print("Running curve_fit")
         popt, pcov = curve_fit(self.fit_param(), self.time, self.current,
                                bounds=([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                                       [3, 3, 2, 2, 10, 10, 10, 10, 10, 10, 1, 1, 1, 1, 1, 1, 1]),
-                               p0=[0.04, 0.5, 1.06, 0.5, 8.41, 3.35, 3.23, 5.6, 2.6, 0.0015, 0.00017, 0.00022, 4.4e-07,
-                                   0.6, 0, 0.242, 0.1],
+                                       [3, 3, 0.05, 0.05, 10, 10, 10, 10, 10, 20, 1, 1, 1, 10, 1, 1, 1]),
+                               p0=[0.0255, 0.071, 0.00, 0.00, 1, 9.2, 6, 5.5, 3.13, 0.01,
+                                   1.05e-05, 2.7e-04, 1.95e-05, 0.04, 0, 0.152, 0.11],
                                maxfev=100000
                                )
 
