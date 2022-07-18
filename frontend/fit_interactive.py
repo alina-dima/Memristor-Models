@@ -589,8 +589,8 @@ class PlotWindow( tk.Toplevel ):
         fig_p_e.show()
 
     def plot_update( self, _ ):
-        error = f"Average error {order_of_magnitude.symbol( self.get_error()[ 0 ] )[ 2 ]}A " \
-                f"({np.mean( self.get_error()[ 1 ] ):.2f} %)"
+        error = f"Average error {order_of_magnitude.symbol( self.get_fit_error()[ 0 ] )[ 2 ]}A " \
+                f"({np.mean( self.get_fit_error()[ 1 ] ):.2f} %)"
         ttk.Label( self.function_frame, text=error ).grid( row=0, column=7, columnspan=2,
                                                            sticky=tk.E + tk.W, padx=0, pady=5 )
         # simulate the model
